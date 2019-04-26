@@ -23,7 +23,6 @@ static BOOL useMagicPasscode;
 static BOOL dismissLS;
 static BOOL dismissLSWithMedia;
 
-static BOOL disableInSOSMode;
 static BOOL disableDuringTime;
 static BOOL disableBioDuringTime;
 static BOOL keepDisabledAfterTime;
@@ -32,7 +31,6 @@ static BOOL disableAlert;
 static BOOL NCHasContent;
 static BOOL unlockedWithTimeout;
 static BOOL wasUsingHeadphones;
-static BOOL isInSOSMode;
 static BOOL isKeptDisabled;
 static BOOL isManuallyDisabled;
 static BOOL isDisabledUntilNext;
@@ -114,7 +112,6 @@ static void unlockedWithPrimary(NSString * passcode)
     dispatch_async(
         dispatch_get_main_queue(),
         ^{
-            isInSOSMode = NO;
 
             if (!truePasscode
             || ![truePasscode isEqualToString:passcode]
@@ -157,7 +154,6 @@ static void unlockedWithSecondary()
             ) {
                 unlockedWithTimeout = YES;
                 if (digitsGracePeriod) {
-                    if (kCFCoreFoundationVersionNumber >= 1348.00) {
                         graceTimeoutTimer =
                             [   [NSTimer
                                     scheduledTimerWithTimeInterval:digitsGracePeriod
@@ -171,18 +167,6 @@ static void unlockedWithSecondary()
                                     }
                                 ] retain
                             ];
-                    } else {
-                        UIAlertView *alert =
-                            [   [UIAlertView alloc]
-                                initWithTitle:@"PassBy"
-                                message:@"Timeout not supported below iOS 10"
-                                delegate:nil
-                                cancelButtonTitle:@"OK"
-                                otherButtonTitles:nil
-                            ];
-                        [alert show];
-                        [alert release];
-                    }
                 }
             }
         }
@@ -219,7 +203,6 @@ static BOOL checkAttemptedUnlock(NSString * passcode)
         return useMagicPasscode
         && truePasscode
         && [truePasscode length]
-        && !isInSOSMode
         && !isManuallyDisabled
         && !isDisabledUntilNext
         && !isTemporaryDisabled()
@@ -260,62 +243,6 @@ static void unlockDevice(BOOL finishUIUnlock)
 @interface SBFUserAuthenticationController
 - (void)processAuthenticationRequest:(SBFAuthenticationRequest *)arg1 responder:(id)arg2;
 @end
-
-%group iOS9
-%hook SBLockScreenManager
-- (BOOL)attemptUnlockWithPasscode:(NSString *)passcode
-{
-    if (!isTweakEnabled || !passcode)
-        return %orig;
-
-    if (checkAttemptedUnlock(passcode)) {
-        if (%orig(truePasscode)) {
-            unlockedWithSecondary();
-            return YES;
-        }
-    }
-
-    if (%orig) {
-        unlockedWithPrimary(passcode);
-        return YES;
-    }
-
-    return NO;
-}
-%end
-%end
-
-%group iOS10
-%hook SBFUserAuthenticationController
-- (void)processAuthenticationRequest:(SBFAuthenticationRequest *)request responder:(id)arg2
-{
-    if (!isTweakEnabled)
-        return %orig;
-
-    NSString * passcode =
-        [   [NSString alloc]
-            initWithData:[request payload]
-            encoding:NSASCIIStringEncoding
-        ];
-
-    if (passcode && [passcode length]) {
-        SBLockScreenManager * SBLSManager = [%c(SBLockScreenManager) sharedInstance];
-
-        if (checkAttemptedUnlock(passcode)
-        && [SBLSManager _attemptUnlockWithPasscode:truePasscode finishUIUnlock: YES]
-        ) {
-            unlockedWithSecondary();
-        } else {
-            %orig;
-            if (![SBLSManager isUILocked])
-                unlockedWithPrimary(passcode);
-        }
-    }
-
-    [passcode release];
-}
-%end
-%end
 
 %group iOS11andAbove
 %hook SBLockScreenManager
@@ -373,18 +300,6 @@ static void unlockDevice(BOOL finishUIUnlock)
 }
 %end
 
-
-@interface SBSOSLockGestureObserver
-- (void)pressSequenceRecognizerDidCompleteSequence:(id)arg1 ;
-@end
-
-%hook SBSOSLockGestureObserver
-- (void)pressSequenceRecognizerDidCompleteSequence:(id)arg1
-{
-    %orig;
-    isInSOSMode = disableInSOSMode;
-}
-%end
 
 @interface SBLockScreenBiometricAuthenticationCoordinator
 - (BOOL)isUnlockingDisabled;
@@ -525,33 +440,6 @@ static BOOL isUsingWatch()
 %end
 %end
 
-%group iOS10
-@interface NCNotificationListViewController
-- (BOOL)hasContent;
-@end
-%hook NCNotificationListViewController
-- (void)viewWillLayoutSubviews
-{
-	%orig;
-	NCHasContent = [self hasContent];
-}
-%end
-%end
-
-
-%group iOS9
-@interface SBLockScreenViewController
--(void)notificationListBecomingVisible:(BOOL)arg1 ;
-@end
-%hook SBLockScreenViewController
--(void)notificationListBecomingVisible:(BOOL)arg1
-{
-	%orig;
-	NCHasContent = arg1;
-}
-%end
-%end
-
 
 @interface SBLockScreenViewControllerBase
 - (BOOL)isShowingMediaControls;
@@ -578,7 +466,7 @@ static void displayStatusChanged(
     CFNotificationCenterRef center, void * observer,
     CFStringRef name, void const * object, CFDictionaryRef userInfo)
 {
-    if (isTweakEnabled && !isInSOSMode) {
+    if (isTweakEnabled) {
         dispatch_async(
             dispatch_get_main_queue(),
             ^{
@@ -693,7 +581,7 @@ static void passBySettingsChanged(
     passcodeLength          =   [[passByDict valueForKey:@"passcodeLength"]         ?:@(6)  intValue];
     timeShift               =   [[passByDict valueForKey:@"timeShift"]              ?:@(0)  intValue];
 
-    disableInSOSMode        =   [[passByDict valueForKey:@"disableInSOSMode"]       ?:@YES  boolValue];
+
     disableDuringTime       =   [[passByDict valueForKey:@"disableDuringTime"]      ?:@NO   boolValue];
     disableBioDuringTime    =   [[passByDict valueForKey:@"disableBioDuringTime"]   ?:@NO   boolValue];
     keepDisabledAfterTime   =   [[passByDict valueForKey:@"keepDisabledAfterTime"]  ?:@NO   boolValue];
@@ -855,13 +743,8 @@ static void getUUID()
 {
     %init;
 
-    if (kCFCoreFoundationVersionNumber >= 1443.00) {
+   
         %init(iOS11andAbove);
-    } else if (kCFCoreFoundationVersionNumber >= 1348.00) {
-        %init(iOS10);
-    } else {
-        %init(iOS9);
-    }
 
     setDarwinNCObserver(passBySettingsChanged,  CFSTR("com.giorgioiavicoli.passby/reload"),         YES);
     setDarwinNCObserver(passByWiFiListChanged,  CFSTR("com.giorgioiavicoli.passby/wifi"),           YES);
@@ -883,7 +766,6 @@ static void getUUID()
 
     unlockedWithTimeout = NO;
     wasUsingHeadphones  = NO;
-    isInSOSMode         = NO;
     isKeptDisabled      = NO;
     isManuallyDisabled  = NO;
     isDisabledUntilNext = NO;
